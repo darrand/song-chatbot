@@ -1,5 +1,6 @@
 nltk==3.7
 numpy==1.22.0
+sklearn
 pandas
 pyspellchecker==0.7.0
 gensim==4.2.0

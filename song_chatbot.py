@@ -6,7 +6,18 @@ import nltk
 import pandas as pd
 import re
 import os
+import json
+from flask import Flask, request
+from flask_ngrok import run_with_ngrok
+from gensim.models import Word2Vec
+import multiprocessing
+from time import time
+from spellchecker import SpellChecker
+print("CPU Count")
+print(multiprocessing.cpu_count())
 
+app = Flask(__name__)
+run_with_ngrok(app)
 # %%
 nltk.download('punkt')
 
@@ -115,25 +126,9 @@ for dict_word in new_artists:
         clean_token.append(i)
     tok_artist.append({key: clean_token})
 
-# %% [markdown]
-# # IR Modelling
 
-# %% [markdown]
-# ## **[Non Boolean Model for lyrics]**
-# ---
-
-# %%
-from gensim.models import Word2Vec
-import multiprocessing
-from time import time
-print(multiprocessing.cpu_count())
-
-# %% [markdown]
-# ### Import an existing model or train a new one
-
-# %%
 try:
-  w2v_model = Word2Vec.load(os.getcwd() + "\spotify_songs_en.model")
+  w2v_model = Word2Vec.load(os.getcwd() + "/spotify_songs_en.model")
   print('Existing model detected')
 except (FileNotFoundError):
   w2v_model = Word2Vec(min_count=1, vector_size=300,window=10, workers=2, sg=1) 
@@ -142,7 +137,7 @@ except (FileNotFoundError):
   print('Time elapsed: {} mins'.format(round((time() - t) / 60, 2)))
   t = time()
   w2v_model.train(tok_lyric, total_examples=w2v_model.corpus_count, epochs=10, report_delay=1)
-  w2v_model.save(os.getcwd() + '\spotify_songs_en.model')
+  w2v_model.save(os.getcwd() + '/spotify_songs_en.model')
   print('Time elapsed: {} mins'.format(round((time() - t) / 60, 2)))
 
 # %% [markdown]
@@ -213,7 +208,7 @@ def find_lyrics(lyric, doc=None):
 
   top_songs = embed_lyric.head(10).reset_index(drop=True)
   top_songs.sort_values(by='track_popularity', ascending=False, inplace=True)
-  return top_songs.head(10).reset_index(drop=True)
+  return top_songs[['track_name', 'track_artist', 'lyrics', 'track_popularity','playlist_genre']].head(10).reset_index(drop=True)
 
 
 # %% [markdown]
@@ -228,7 +223,7 @@ def find_lyrics(lyric, doc=None):
 Spell Checker using norvig spell checker for artist name, some problems:
 Its accuracy is worrying
 '''
-from spellchecker import SpellChecker
+
 
 def build_frequency_list_artist():
   freq = {}
@@ -311,7 +306,7 @@ def get_query(kalimat,token_dict):
       temp_word = word
   return hasil
 
-def retrieve_result_artist(kalimat,token=index_artist, lyrics=False):
+def find_artist(kalimat,token=index_artist, lyrics=False):
   kalimat = spell_check_artist(nltk.tokenize.word_tokenize(kalimat))
   id_set = get_query(kalimat,token)
   artist_result = pd.DataFrame()
@@ -398,52 +393,63 @@ def find_title(query, title_index=title_index, data=sorted):
   indx = find_intersection(query, title_index)
   answer = pd.DataFrame()
   if indx == []:
-    answer = "Not Found"
-    print(answer)
-    return 0
+    return answer
   answer = sorted.iloc[indx]
   answer = answer.sort_values(by='track_popularity', ascending=False)                 
   return answer
 
-# %% [markdown]
-# ## Input combination
+# Functions for exporting to ports down below
+@app.route('/')
+def default_page():
+  return "Hello"
 
-# %% [markdown]
-# ### Arist & Title
-
-# %%
-def retrieve_artist_title(q_artist, q_title):
-  artist_filter = retrieve_result_artist(q_artist, lyrics=True)
+@app.route('/artist-title', methods = ['POST'])
+def find_artist_title():
+  q_artist = request.get_json()['artist']
+  q_title = request.get_json()['title']
+  artist_filter = find_artist(q_artist, lyrics=True)
   title_filter = find_title(q_title)
   full_filter = pd.merge(artist_filter, title_filter, how='right', on=['track_artist', "track_name"])
   full_filter = full_filter.iloc[:, 0:7].dropna()
   full_filter.columns = artist_filter.columns
-  return full_filter
+  return json.dumps(full_filter.to_json())
 
-# %% [markdown]
-# ### Artist & Lyric
+@app.route('/artist-lyrics', methods = ['POST'])
+def find_artist_lyrics():
+  q_artist = request.get_json()['artist']
+  q_lyrics = request.get_json()['lyrics']
 
-# %%
-# Jika artist and lyrics
-def retrieve_artist_lyrics(q_artist, q_lyrics):
-  artist_filter = retrieve_result_artist(q_artist, lyrics=True)
+  artist_filter = find_artist(q_artist, lyrics=True)
   full_filter = find_lyrics(q_lyrics, artist_filter)
-  return full_filter
+  return json.dumps(full_filter.to_json())
 
-# %% [markdown]
-# ### Title Lyric
-
-# %%
-def find_title_lyrics(q_title, q_lyrics):
+@app.route('/title-lyrics', methods = ['POST'])
+def find_title_lyrics():
+  q_title = request.get_json()['title'] 
+  q_lyrics = request.get_json()['lyrics']
   title_idx = indexer(tok_title)
   title_doc = find_title(q_title, title_idx, sorted)
   full_doc = find_lyrics(q_lyrics, title_doc)
-  return full_doc
+  return json.dumps(full_doc.to_json())
 
-# %% [markdown]
-# # **[Evaluation]**
-# 
-# Test case dan perhitungan dilakukan di dokumen dokumentasi program
+@app.route('/title', methods=['POST'])
+def find_title_json():
+  q_title = request.get_json()['title']
+  title_df = find_title(q_title)
+  return json.dumps(title_df.to_json())
 
-# %% [markdown]
-# # Misc
+@app.route('/artist', methods=['POST'])
+def find_artist_json():
+  q_artist = request.get_json()['artist']
+  artist_df = find_artist(q_artist, lyrics=True)
+  return json.dumps(artist_df.to_json())
+
+@app.route('/lyrics', methods=['POST'])
+def find_lyrics_json():
+  q_lyrics = request.get_json()['lyrics']
+  lyrics_df = find_lyrics(q_lyrics)
+  return json.dumps(lyrics_df.to_json())
+
+if __name__ == "__main__":
+  print('starting server')
+  app.run()
